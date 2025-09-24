@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { AppProvider, useApp } from './context/AppContext';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import BookExchange from './components/BookExchange';
 import Events from './components/Events';
 import AdminPanel from './components/AdminPanel';
+import Login from './components/Login';
 
-function AppContent() {
+function Dashboard() {
   const [currentPage, setCurrentPage] = useState<'books' | 'events' | 'admin'>('books');
   const { user } = useApp();
 
@@ -22,7 +24,7 @@ function AppContent() {
 function App() {
   return (
     <AppProvider>
-      <AppContent />
+      <AppRoutes />
       <Toaster 
         position="top-right"
         toastOptions={{
@@ -34,6 +36,22 @@ function App() {
         }}
       />
     </AppProvider>
+  );
+}
+
+function AppRoutes() {
+  const { user, authInitialized } = useApp() as any;
+  // Avoid flashing login before auth is initialized
+  if (!authInitialized) return null;
+  return (
+    <Routes>
+      <Route path="/login" element={<Login />} />
+      <Route
+        path="/"
+        element={user ? <Dashboard /> : <Navigate to="/login" replace />}
+      />
+      <Route path="*" element={<Navigate to={user ? '/' : '/login'} replace />} />
+    </Routes>
   );
 }
 

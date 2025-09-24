@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, ReactNode, useEffect } from 'react';
+import { createContext, useContext, useState, ReactNode, useEffect, useMemo } from 'react';
 import { User, Book, Event, Message, Chat, Transaction, Notification, AdminStats } from '../types';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
@@ -55,12 +55,13 @@ interface AppContextType {
 	// Utility
 	loading: boolean;
 	error: string | null;
+	authInitialized: boolean;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-// Enhanced sample data
-const sampleUsers: User[] = [
+// Enhanced sample data (kept for reference during development)
+/* const sampleUsers: User[] = [
   {
     id: 'user1',
     name: 'Sarah Johnson',
@@ -119,9 +120,9 @@ const sampleUsers: User[] = [
       language: 'en'
     }
   }
-];
+]; */
 
-const sampleBooks: Book[] = [
+/* const sampleBooks: Book[] = [
   {
     id: '1',
     title: 'Data Structures and Algorithms',
@@ -160,9 +161,9 @@ const sampleBooks: Book[] = [
     createdAt: new Date('2024-12-02'),
     updatedAt: new Date('2024-12-02')
   }
-];
+]; */
 
-const sampleEvents: Event[] = [
+/* const sampleEvents: Event[] = [
   {
     id: '1',
     name: 'Tech Talk: AI in Modern Applications',
@@ -211,33 +212,34 @@ const sampleEvents: Event[] = [
     createdAt: new Date('2024-12-01'),
     updatedAt: new Date('2024-12-01')
   }
-];
+]; */
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [users, setUsers] = useState<User[]>(sampleUsers);
-  const [books, setBooks] = useState<Book[]>(sampleBooks);
-  const [events, setEvents] = useState<Event[]>(sampleEvents);
+  const [users, setUsers] = useState<User[]>([]);
+  const [books, setBooks] = useState<Book[]>([]);
+  const [events, setEvents] = useState<Event[]>([]);
   const [chats, setChats] = useState<Chat[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(false);
+  const [authInitialized, setAuthInitialized] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Admin data
-  const [adminStats] = useState<AdminStats>({
+  const [pendingUsers, setPendingUsers] = useState<User[]>([]);
+  const [reportedContent] = useState<{ id: string; type: 'book' | 'event' | 'user'; reason: string }[]>([]);
+
+  // Admin data (derived live from current state)
+  const adminStats: AdminStats = useMemo(() => ({
     totalUsers: users.length,
     activeUsers: users.filter(u => u.isActive).length,
     totalBooks: books.length,
     totalEvents: events.length,
     totalTransactions: transactions.length,
-    pendingApprovals: 3,
-    reportedContent: 1
-  });
-
-  const [pendingUsers, setPendingUsers] = useState<User[]>([]);
-  const [reportedContent] = useState<{ id: string; type: 'book' | 'event' | 'user'; reason: string }[]>([]);
+    pendingApprovals: pendingUsers.length,
+    reportedContent: reportedContent.length
+  }), [users, books, events, transactions, pendingUsers, reportedContent]);
 
   // Authentication
   const login = async (email: string, password: string, rememberMe = false): Promise<boolean> => {
@@ -245,57 +247,49 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setError(null);
 
     try {
-      // Example Supabase auth call (replace demo logic when ready)
-      // const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-      // if (error) throw error;
-      // const profile = data.user;
-      // Validate university email
-      if (!email.endsWith('@university.edu')) {
-        throw new Error('Please use your university email address');
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      const authUser = data.user;
+
+      // Load or create profile row
+      const { data: profileRows, error: profileErr } = await supabase
+        .from('users')
+        .select('*')
+        .eq('email', email)
+        .limit(1);
+      if (profileErr) throw profileErr;
+
+      let profile = profileRows?.[0];
+      if (!profile) {
+        const name = email.split('@')[0].replace('.', ' ').replace(/\b\w/g, l => l.toUpperCase());
+        const { data: inserted, error: insErr } = await supabase
+          .from('users')
+          .insert({ auth_user_id: authUser?.id, name, email, role: 'student', is_verified: true, is_active: true })
+          .select('*')
+          .single();
+        if (insErr) throw insErr;
+        profile = inserted;
       }
 
-      // Simple demo login - in real app, this would call an API
-      if (email && password) {
-        const foundUser = users.find(u => u.email === email) || {
-          id: 'current-user',
-          name: email.split('@')[0].replace('.', ' ').replace(/\b\w/g, l => l.toUpperCase()),
-          email,
-          role: email.includes('admin') ? 'admin' as const : 'student' as const,
-          department: 'Computer Science',
-          year: '3rd Year',
-          isVerified: true,
-          isActive: true,
-          rating: 4.5,
-          totalTransactions: 0,
-          createdAt: new Date(),
-          preferences: {
-            notifications: {
-              messages: true,
-              events: true,
-              transactions: true,
-              announcements: true,
-              quietHours: { start: '22:00', end: '08:00' }
-            },
-            privacy: {
-              profileVisibility: 'university',
-              showContactInfo: true,
-              showActivity: true
-            },
-            theme: 'light',
-            language: 'en'
-          }
-        };
+      const mapped: User = {
+        id: profile.id,
+        name: profile.name,
+        email: profile.email,
+        role: profile.role,
+        department: profile.department ?? undefined,
+        year: profile.year ?? undefined,
+        isVerified: profile.is_verified,
+        isActive: profile.is_active,
+        rating: Number(profile.rating ?? 0),
+        totalTransactions: Number(profile.total_transactions ?? 0),
+        createdAt: new Date(profile.created_at),
+        preferences: undefined
+      };
 
-        setUser(foundUser);
-        
-        if (rememberMe) {
-          localStorage.setItem('campus_connect_user', JSON.stringify(foundUser));
-        }
-
-        toast.success(`Welcome back, ${foundUser.name}!`);
-        return true;
-      }
-      return false;
+      setUser(mapped);
+      if (rememberMe) localStorage.setItem('campus_connect_user', JSON.stringify(mapped));
+      toast.success(`Welcome back, ${mapped.name}!`);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
       toast.error(err instanceof Error ? err.message : 'Login failed');
@@ -305,8 +299,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const register = async (userData: Partial<User>, _password: string): Promise<boolean> => {
-    void _password;
+  const register = async (userData: Partial<User>, password: string): Promise<boolean> => {
     setLoading(true);
     setError(null);
 
@@ -314,41 +307,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!userData.email?.endsWith('@university.edu')) {
         throw new Error('Please use your university email address');
       }
+      const { data, error } = await supabase.auth.signUp({ email: userData.email!, password });
+      if (error) throw error;
+      const authUser = data.user;
 
-      const newUser: User = {
-        id: Date.now().toString(),
-        name: userData.name || '',
-        email: userData.email || '',
+      const { error: insErr } = await supabase.from('users').insert({
+        auth_user_id: authUser?.id,
+        name: userData.name || userData.email!.split('@')[0],
+        email: userData.email!,
         role: userData.role || 'student',
-        department: userData.department,
-        year: userData.year,
-        isVerified: false,
-        isActive: false, // Requires admin approval
-        rating: 0,
-        totalTransactions: 0,
-        createdAt: new Date(),
-        preferences: {
-          notifications: {
-            messages: true,
-            events: true,
-            transactions: true,
-            announcements: true,
-            quietHours: { start: '22:00', end: '08:00' }
-          },
-          privacy: {
-            profileVisibility: 'university',
-            showContactInfo: true,
-            showActivity: true
-          },
-          theme: 'light',
-          language: 'en'
-        }
-      };
+        is_verified: false,
+        is_active: false
+      });
+      if (insErr) throw insErr;
 
-      setUsers(prev => [...prev, newUser]);
-      setPendingUsers(prev => [...prev, newUser]);
-      
-      toast.success('Registration successful! Please wait for admin approval.');
+      toast.success('Registration successful! Please check your email to verify your account.');
       return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Registration failed');
@@ -359,7 +332,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const logout = () => {
+  const logout = async () => {
+    await supabase.auth.signOut();
     setUser(null);
     localStorage.removeItem('campus_connect_user');
     toast.success('Logged out successfully');
@@ -382,28 +356,67 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Books
   const addBook = async (book: Omit<Book, 'id' | 'createdAt' | 'updatedAt' | 'views' | 'isAvailable' | 'postedBy' | 'posterName'>) => {
-    const newBook: Book = {
-      ...book,
-      id: Date.now().toString(),
-      postedBy: user?.id || 'anonymous',
-      posterName: user?.name || 'Anonymous',
-      isAvailable: true,
-      views: 0,
-      createdAt: new Date(),
-      updatedAt: new Date()
+    if (!user) throw new Error('Not authenticated');
+    const payload = {
+      title: book.title,
+      author: book.author,
+      isbn: book.isbn ?? null,
+      posted_by: user.id,
+      poster_name: user.name,
+      images: null,
+      description: book.description ?? null,
+      condition: book.condition,
+      price: book.price ?? null,
+      suggested_price: book.suggestedPrice ?? null,
+      type: book.type,
+      department: book.department ?? null,
+      course_code: book.courseCode ?? null,
+      location: book.location ?? null
     };
-    setBooks(prev => [newBook, ...prev]);
+    const { data, error } = await supabase.from('books').insert(payload).select('*').single();
+    if (error) throw error;
+    const mapped: Book = {
+      id: data.id,
+      title: data.title,
+      author: data.author,
+      isbn: data.isbn ?? undefined,
+      postedBy: data.posted_by,
+      posterName: data.poster_name,
+      images: data.images ?? undefined,
+      description: data.description ?? undefined,
+      condition: data.condition,
+      price: data.price ?? undefined,
+      suggestedPrice: data.suggested_price ?? undefined,
+      type: data.type,
+      department: data.department ?? undefined,
+      courseCode: data.course_code ?? undefined,
+      location: data.location ?? undefined,
+      isAvailable: data.is_available,
+      views: data.views,
+      createdAt: new Date(data.created_at),
+      updatedAt: new Date(data.updated_at)
+    };
+    setBooks(prev => [mapped, ...prev]);
     toast.success('Book listing posted successfully!');
   };
 
   const updateBook = async (id: string, updates: Partial<Book>) => {
-    setBooks(prev => prev.map(book => 
-      book.id === id ? { ...book, ...updates, updatedAt: new Date() } : book
-    ));
+    const payload: any = {};
+    if (updates.title !== undefined) payload.title = updates.title;
+    if (updates.author !== undefined) payload.author = updates.author;
+    if (updates.description !== undefined) payload.description = updates.description;
+    if (updates.condition !== undefined) payload.condition = updates.condition;
+    if (updates.price !== undefined) payload.price = updates.price;
+    if (updates.type !== undefined) payload.type = updates.type;
+    const { data, error } = await supabase.from('books').update(payload).eq('id', id).select('*').single();
+    if (error) throw error;
+    setBooks(prev => prev.map(book => book.id === id ? { ...book, ...updates, updatedAt: new Date(data.updated_at) } : book));
     toast.success('Book updated successfully!');
   };
 
   const deleteBook = async (id: string) => {
+    const { error } = await supabase.from('books').delete().eq('id', id);
+    if (error) throw error;
     setBooks(prev => prev.filter(book => book.id !== id));
     toast.success('Book listing deleted');
   };
@@ -429,30 +442,68 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Events
   const addEvent = async (event: Omit<Event, 'id' | 'createdAt' | 'updatedAt' | 'currentAttendees' | 'attendees' | 'isApproved' | 'organizer' | 'organizerId' | 'isActive'>) => {
-    const newEvent: Event = {
-      ...event,
-      id: Date.now().toString(),
-      organizerId: user?.id || 'anonymous',
-      organizer: user?.name || 'Anonymous',
-      currentAttendees: 0,
-      attendees: [],
-      isApproved: user?.role === 'admin',
-      isActive: true,
-      createdAt: new Date(),
-      updatedAt: new Date()
+    if (!user) throw new Error('Not authenticated');
+    const payload = {
+      name: event.name,
+      description: event.description ?? null,
+      date: event.date,
+      time: event.time,
+      end_time: event.endTime ?? null,
+      duration: event.duration,
+      venue: event.venue,
+      category: event.category,
+      department: event.department,
+      organizer: user.name,
+      organizer_id: user.id,
+      is_ticketed: event.isTicketed ?? false
     };
-    setEvents(prev => [newEvent, ...prev]);
-    toast.success(user?.role === 'admin' ? 'Event created successfully!' : 'Event submitted for approval');
+    const { data, error } = await supabase.from('events').insert(payload).select('*').single();
+    if (error) throw error;
+    const mapped: Event = {
+      id: data.id,
+      name: data.name,
+      description: data.description ?? undefined,
+      date: data.date,
+      time: data.time,
+      endTime: data.end_time ?? undefined,
+      duration: data.duration,
+      venue: data.venue,
+      category: data.category,
+      department: data.department,
+      organizer: data.organizer,
+      organizerId: data.organizer_id,
+      maxAttendees: data.max_attendees ?? undefined,
+      currentAttendees: data.current_attendees,
+      isTicketed: data.is_ticketed,
+      ticketPrice: data.ticket_price ?? undefined,
+      registrationDeadline: data.registration_deadline ?? undefined,
+      tags: data.tags ?? undefined,
+      isApproved: data.is_approved,
+      isActive: data.is_active,
+      attendees: [],
+      createdAt: new Date(data.created_at),
+      updatedAt: new Date(data.updated_at)
+    };
+    setEvents(prev => [mapped, ...prev]);
+    toast.success(user.role === 'admin' ? 'Event created successfully!' : 'Event submitted for approval');
   };
 
   const updateEvent = async (id: string, updates: Partial<Event>) => {
-    setEvents(prev => prev.map(event => 
-      event.id === id ? { ...event, ...updates, updatedAt: new Date() } : event
-    ));
+    const payload: any = {};
+    if (updates.name !== undefined) payload.name = updates.name;
+    if (updates.description !== undefined) payload.description = updates.description;
+    if (updates.date !== undefined) payload.date = updates.date;
+    if (updates.time !== undefined) payload.time = updates.time;
+    if (updates.venue !== undefined) payload.venue = updates.venue;
+    const { data, error } = await supabase.from('events').update(payload).eq('id', id).select('*').single();
+    if (error) throw error;
+    setEvents(prev => prev.map(ev => ev.id === id ? { ...ev, ...updates, updatedAt: new Date(data.updated_at) } : ev));
     toast.success('Event updated successfully!');
   };
 
   const deleteEvent = async (id: string) => {
+    const { error } = await supabase.from('events').delete().eq('id', id);
+    if (error) throw error;
     setEvents(prev => prev.filter(event => event.id !== id));
     toast.success('Event deleted');
   };
@@ -483,60 +534,89 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Chat & Messages
   const addMessage = async (message: Omit<Message, 'id' | 'timestamp' | 'isRead'>) => {
-    const newMessage: Message = {
-      ...message,
-      id: Date.now().toString(),
-      timestamp: new Date(),
-      isRead: false
+    const { data, error } = await supabase.from('messages').insert({
+      chat_id: message.chatId,
+      sender_id: message.senderId,
+      receiver_id: message.receiverId ?? null,
+      content: message.content,
+      type: message.type,
+      sender_name: message.senderName
+    }).select('*').single();
+    if (error) throw error;
+
+    const mapped: Message = {
+      id: data.id,
+      chatId: data.chat_id,
+      senderId: data.sender_id,
+      receiverId: data.receiver_id ?? '',
+      content: data.content,
+      type: data.type,
+      fileUrl: data.file_url ?? undefined,
+      fileName: data.file_name ?? undefined,
+      timestamp: new Date(data.timestamp),
+      isRead: data.is_read,
+      senderName: data.sender_name,
+      isEdited: data.is_edited ?? false,
+      replyTo: data.reply_to ?? undefined
     };
-    setMessages(prev => [...prev, newMessage]);
-    
-    // Update chat with last message
-    setChats(prev => prev.map(chat => 
-      chat.participants.includes(message.senderId) && chat.participants.includes(message.receiverId)
-        ? { ...chat, lastMessage: message.content, lastMessageTime: new Date() }
-        : chat
-    ));
+    setMessages(prev => [...prev, mapped]);
+    await supabase.from('chats').update({ last_message: data.content, last_message_time: data.timestamp }).eq('id', data.chat_id);
+    setChats(prev => prev.map(c => c.id === data.chat_id ? { ...c, lastMessage: data.content, lastMessageTime: new Date(data.timestamp) } : c));
   };
 
   const markMessageAsRead = async (messageId: string) => {
-    setMessages(prev => prev.map(msg => 
-      msg.id === messageId ? { ...msg, isRead: true } : msg
-    ));
+    await supabase.from('messages').update({ is_read: true }).eq('id', messageId);
+    setMessages(prev => prev.map(msg => msg.id === messageId ? { ...msg, isRead: true } : msg));
   };
 
   const getChat = (bookId?: string, otherUserId?: string, eventId?: string): Chat | undefined => {
     return chats.find(chat => {
       if (bookId && chat.bookId === bookId) {
-        return chat.participants.includes(user?.id || '') && chat.participants.includes(otherUserId || '');
+        return chat.participants.includes(user?.id || '') && (otherUserId ? chat.participants.includes(otherUserId) : true);
       }
       if (eventId && chat.eventId === eventId) {
         return chat.participants.includes(user?.id || '');
       }
-      return chat.participants.includes(user?.id || '') && chat.participants.includes(otherUserId || '');
+      return chat.participants.includes(user?.id || '') && (otherUserId ? chat.participants.includes(otherUserId) : true);
     });
   };
 
   const createChat = async (participants: string[], type: 'direct' | 'group', bookId?: string, eventId?: string): Promise<Chat> => {
+    const { data: chatRow, error } = await supabase.from('chats').insert({
+      type,
+      book_id: bookId ?? null,
+      event_id: eventId ?? null,
+      is_active: true
+    }).select('*').single();
+    if (error) throw error;
+
+    // Insert participants
+    const participantRecords = participants.map(pid => ({ chat_id: chatRow.id, user_id: pid }));
+    const { error: partErr } = await supabase.from('chat_participants').insert(participantRecords);
+    if (partErr) throw partErr;
+
+    // Resolve names locally if available
+    const participantNames = participants.map(id => users.find(u => u.id === id)?.name || 'Unknown');
     const book = bookId ? books.find(b => b.id === bookId) : undefined;
     const event = eventId ? events.find(e => e.id === eventId) : undefined;
-    
-    const newChat: Chat = {
-      id: Date.now().toString(),
+
+    const mapped: Chat = {
+      id: chatRow.id,
       participants,
-      participantNames: participants.map(id => users.find(u => u.id === id)?.name || 'Unknown'),
+      participantNames,
       type,
       bookId,
       eventId,
       bookTitle: book?.title,
       eventTitle: event?.name,
+      lastMessage: chatRow.last_message ?? undefined,
+      lastMessageTime: chatRow.last_message_time ? new Date(chatRow.last_message_time) : undefined,
       unreadCount: {},
-      isActive: true,
-      createdAt: new Date()
+      isActive: chatRow.is_active,
+      createdAt: new Date(chatRow.created_at)
     };
-    
-    setChats(prev => [...prev, newChat]);
-    return newChat;
+    setChats(prev => [...prev, mapped]);
+    return mapped;
   };
 
   // Transactions
@@ -609,6 +689,173 @@ export function AppProvider({ children }: { children: ReactNode }) {
         localStorage.removeItem('campus_connect_user');
       }
     }
+
+    // Initialize current session and listen for changes
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      const session = data.session;
+      if (session?.user) {
+        const { data: profileRows } = await supabase
+          .from('users')
+          .select('*')
+          .eq('auth_user_id', session.user.id)
+          .limit(1);
+        const profile = profileRows?.[0];
+        if (profile) {
+          setUser({
+            id: profile.id,
+            name: profile.name,
+            email: profile.email,
+            role: profile.role,
+            department: profile.department ?? undefined,
+            year: profile.year ?? undefined,
+            isVerified: profile.is_verified,
+            isActive: profile.is_active,
+            rating: Number(profile.rating ?? 0),
+            totalTransactions: Number(profile.total_transactions ?? 0),
+            createdAt: new Date(profile.created_at),
+            preferences: undefined
+          });
+        }
+      }
+      const { data: sub } = supabase.auth.onAuthStateChange(async (_event, sess) => {
+        if (sess?.user) {
+          const { data: rows } = await supabase
+            .from('users')
+            .select('*')
+            .eq('auth_user_id', sess.user.id)
+            .limit(1);
+          const prof = rows?.[0];
+          if (prof) {
+            const mapped: User = {
+              id: prof.id,
+              name: prof.name,
+              email: prof.email,
+              role: prof.role,
+              department: prof.department ?? undefined,
+              year: prof.year ?? undefined,
+              isVerified: prof.is_verified,
+              isActive: prof.is_active,
+              rating: Number(prof.rating ?? 0),
+              totalTransactions: Number(prof.total_transactions ?? 0),
+              createdAt: new Date(prof.created_at),
+              preferences: undefined
+            };
+            setUser(mapped);
+          }
+        } else {
+          setUser(null);
+        }
+        setAuthInitialized(true);
+      });
+      setAuthInitialized(true);
+      return () => {
+        sub.subscription.unsubscribe();
+      };
+    })();
+
+    // Load initial data
+    (async () => {
+      const { data: bookRows } = await supabase.from('books').select('*').order('created_at', { ascending: false });
+      if (bookRows) {
+        setBooks(bookRows.map((b: any) => ({
+          id: b.id,
+          title: b.title,
+          author: b.author,
+          isbn: b.isbn ?? undefined,
+          postedBy: b.posted_by,
+          posterName: b.poster_name,
+          images: b.images ?? undefined,
+          description: b.description ?? undefined,
+          condition: b.condition,
+          price: b.price ?? undefined,
+          suggestedPrice: b.suggested_price ?? undefined,
+          type: b.type,
+          department: b.department ?? undefined,
+          courseCode: b.course_code ?? undefined,
+          location: b.location ?? undefined,
+          isAvailable: b.is_available,
+          views: b.views,
+          createdAt: new Date(b.created_at),
+          updatedAt: new Date(b.updated_at)
+        })));
+      }
+
+      const { data: eventRows } = await supabase.from('events').select('*').order('created_at', { ascending: false });
+      if (eventRows) {
+        setEvents(eventRows.map((e: any) => ({
+          id: e.id,
+          name: e.name,
+          description: e.description ?? undefined,
+          date: e.date,
+          time: e.time,
+          endTime: e.end_time ?? undefined,
+          duration: e.duration,
+          venue: e.venue,
+          category: e.category,
+          department: e.department,
+          organizer: e.organizer,
+          organizerId: e.organizer_id,
+          maxAttendees: e.max_attendees ?? undefined,
+          currentAttendees: e.current_attendees,
+          isTicketed: e.is_ticketed,
+          ticketPrice: e.ticket_price ?? undefined,
+          registrationDeadline: e.registration_deadline ?? undefined,
+          tags: e.tags ?? undefined,
+          isApproved: e.is_approved,
+          isActive: e.is_active,
+          attendees: [],
+          createdAt: new Date(e.created_at),
+          updatedAt: new Date(e.updated_at)
+        })));
+      }
+      // Load chats
+      const { data: chatRows } = await supabase.from('chats').select('*').order('created_at', { ascending: false });
+      if (chatRows) {
+        // fetch participants
+        const { data: cps } = await supabase.from('chat_participants').select('*');
+        const mapChat = (c: any): Chat => {
+          const participants = (cps || []).filter((p: any) => p.chat_id === c.id).map((p: any) => p.user_id);
+          const participantNames = participants.map((id: string) => users.find(u => u.id === id)?.name || 'Unknown');
+          return {
+            id: c.id,
+            participants,
+            participantNames,
+            type: c.type,
+            bookId: c.book_id ?? undefined,
+            eventId: c.event_id ?? undefined,
+            bookTitle: undefined,
+            eventTitle: undefined,
+            lastMessage: c.last_message ?? undefined,
+            lastMessageTime: c.last_message_time ? new Date(c.last_message_time) : undefined,
+            unreadCount: {},
+            isActive: c.is_active,
+            createdAt: new Date(c.created_at)
+          };
+        };
+        setChats(chatRows.map(mapChat));
+      }
+
+      // Load messages (optional: scope per chat later)
+      const { data: msgRows } = await supabase.from('messages').select('*').order('timestamp', { ascending: true });
+      if (msgRows) {
+        setMessages(msgRows.map((m: any) => ({
+          id: m.id,
+          chatId: m.chat_id,
+          senderId: m.sender_id,
+          receiverId: m.receiver_id ?? '',
+          content: m.content,
+          type: m.type,
+          fileUrl: m.file_url ?? undefined,
+          fileName: m.file_name ?? undefined,
+          timestamp: new Date(m.timestamp),
+          isRead: m.is_read,
+          senderName: m.sender_name,
+          isEdited: m.is_edited ?? false,
+          replyTo: m.reply_to ?? undefined
+        })));
+      }
+    })();
   }, []);
 
   return (
@@ -663,7 +910,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       
       // Utility
       loading,
-      error
+      error,
+      authInitialized
     }}>
       {children}
     </AppContext.Provider>

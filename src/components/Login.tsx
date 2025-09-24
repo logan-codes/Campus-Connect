@@ -2,7 +2,8 @@
 import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { useApp } from "@/context/AppContext";
 
 
 import { toast } from "sonner"; // ✅ import Sonner
@@ -10,6 +11,8 @@ import { toast } from "sonner"; // ✅ import Sonner
 export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const { login } = useApp();
+  const navigate = useNavigate();
 
   const handleLogin = async () => {
     if (!email || !password) {
@@ -18,11 +21,10 @@ export default function Login() {
     }
 
     try {
-      const userId = "123"; // get UUID
-      if (!userId) throw new Error("User ID not found");
-
+      const ok = await login(email, password, true);
+      if (!ok) throw new Error("Login failed");
       toast.success("Login successful!");
-     
+      navigate("/", { replace: true });
     } catch (err: unknown) {
       if (err instanceof Error) {
         toast.error(err.message);
